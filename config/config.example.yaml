@@ -1,0 +1,65 @@
+paths:
+  targets_dir:   /ioda-upstream-delay-application/source_data
+  staging_dir:   /data/staging        # yarrp writes here
+  outbox_dir:    /data/outbox         # completed scans, awaiting upload
+  scan_log_dir:  /data/scan-logs      # one log per scan attempt, always kept
+  manifest_path: /data/manifest.jsonl # local record of every scan
+  log_path:      /data/ioda-ud.log
+  yarrp_bin:     /yarrp/yarrp
+
+vp:
+  # Defaults to the machine's own hostname, with any domain and underscores
+  # stripped - it becomes the first field of every uploaded filename.
+  hostname: null
+
+prober:
+  probe_rate: 30000   # packets per second (overridden by $PROBE_RATE)
+  interval:   1800    # seconds between cycles, aligned to the clock (overridden by $INTERVAL)
+  max_ttl:    32
+
+reporting:
+  destination:       ioda-ud@traversa.cc.gatech.edu:/traversa-pool/upstream-delay/incoming
+  port:              3412
+  bw_limit:          100m   # passed to rsync --bwlimit (overridden by $BW_LIMIT)
+  ssh_identity_file: /data/ssh_id
+
+options:
+  # We retry failed scans this many times if there is room before the next interval
+  max_attempts: 2
+
+  # Safety margin, in seconds, added to that estimate before deciding whether
+  # a retry fits.
+  retry_margin: 60
+
+  # Stabilizes scan rate when we split up pps rate by size of bucket in scans with multiple ports / protocols
+  min_probe_rate: 50
+
+# Each entry is a profile: one target list, scanned once per cycle. Profiles
+# run one after another, in the order given.
+#
+# targets_file may be a single file or a directory of files (relative to
+# paths.targets_dir, or absolute). Each line is either:
+#
+#   1.2.3.4                bare address - defaults to an ICMP probe
+#   1.2.3.4,ICMP           ICMP/ICMP_REPLY take no port
+#   1.2.3.4,UDP,53         TCP_ACK/TCP_SYN/UDP require one
+#   1.2.3.4,TCP_SYN,443
+#
+# Targets are bucketed by (protocol, port) and yarrp runs once per bucket,
+# since it takes a single probe type and port per invocation. With
+# `parallel: true` those buckets run at the same time, sharing probe_rate in
+# proportion to their target counts
+#
+# The profile name appears in the uploaded filename, so it may contain only
+# letters, digits and hyphens.
+scans:
+  - name: default
+    targets_file: targets
+    parallel: true
+
+  # A mixed-protocol list, at its own probe rate:
+  # - name: multiproto
+  #   targets_file: protocol_testing/    # a directory of target files
+  #   probe_rate: 10000
+  #   max_ttl: 32
+  #   parallel: true
