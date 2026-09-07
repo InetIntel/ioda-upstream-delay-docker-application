@@ -1,0 +1,34 @@
+paths:
+  targets_dir:   /ioda-upstream-delay-application/source_data
+
+  staging_dir:   /data/staging
+  outbox_dir:    /data/outbox
+  scan_log_dir:  /data/scan-logs
+  manifest_path: /data/manifest.jsonl
+  log_path:      /data/ioda-ud.log
+  yarrp_bin:     /yarrp/yarrp
+
+vp:
+  # Leave null to use the machine's own hostname
+  hostname: null
+
+prober:
+  probe_rate: 30000   # overridden by $PROBE_RATE
+  interval: 1800       # overridden by $INTERVAL
+  max_ttl: 32
+
+reporting:
+  destination:       ioda-ud@traversa.cc.gatech.edu:/traversa-pool/upstream-delay/incoming
+  port:              3412
+  bw_limit:          100m   # rsync --bwlimit; overridden by $BW_LIMIT
+  ssh_identity_file: /data/ssh_id
+
+options:
+  max_attempts:   2
+  retry_margin:   60
+  min_probe_rate: 50
+
+scans:
+  - name: default
+    targets_file: targets
+    parallel: true

@@ -1,16 +1,3 @@
-"""Configuration loading and validation.
-
-Settings come from three places, each overlaying the one before it:
-
-    1. DEFAULTS below
-    2. /config/config.yaml (or $CONFIG_FILE), if it exists
-    3. environment variables (PROBE_RATE, BW_LIMIT, INTERVAL)
-
-The environment layer exists because deployed vantage points set these in
-their docker-compose.yaml, and those files must keep working untouched.
-"""
-
-import copy
 import os
 import socket
 
@@ -23,130 +10,113 @@ class ConfigError(ValueError):
     pass
 
 
-DEFAULT_CONFIG_PATH = "/config/config.yaml"
+APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFIG_PATH = os.path.join(APP_ROOT, "config", "config.yaml")
 
-DEFAULTS = {
-    "paths": {
-        "targets_dir": "/ioda-upstream-delay-application/source_data",
-        "staging_dir": "/data/staging",
-        "outbox_dir": "/data/outbox",
-        "scan_log_dir": "/data/scan-logs",
-        "manifest_path": "/data/manifest.jsonl",
-        "log_path": "/data/ioda-ud.log",
-        "yarrp_bin": "/yarrp/yarrp",
-    },
-    "vp": {
-        # TODO: Change back to - Left unset, the hostname is taken from the machine itself.
-        "hostname": "simonTestHost",
-    },
-    "prober": {
-        "probe_rate": 30000,
-        "interval": 1800,
-        "max_ttl": 32,
-    },
-    "reporting": {
-        "destination": "ioda-ud@traversa.cc.gatech.edu:/traversa-pool/upstream-delay/incoming",
-        "port": 3412,
-        "bw_limit": "100m",
-        "ssh_identity_file": "/data/ssh_id",
-    },
-    "options": {
-        "max_attempts": 2,
-        "min_probe_rate": 50,
-        "retry_margin": 60,
-    },
-    "scans": [
-        {
-            "name": "default",
-            "targets_file": "targets",
-            "parallel": True,
-        }
-    ],
+REQUIRED_PATHS = (
+    "targets_dir", "staging_dir", "outbox_dir", "scan_log_dir",
+    "manifest_path", "log_path", "yarrp_bin",
+)
+REQUIRED_PROBER = ("probe_rate", "interval", "max_ttl")
+REQUIRED_REPORTING = ("destination", "port", "bw_limit", "ssh_identity_file")
+
+# The only keys that may be omitted, with the value used when they are.
+OPTIONAL_OPTIONS = {"max_attempts": 2, "min_probe_rate": 50, "retry_margin": 60}
+
+# Settings a vantage point may override in its docker-compose.yaml, as
+# {env var: (config section, key, type)}. These win over config.yaml.
+ENV_OVERRIDES = {
+    "PROBE_RATE": ("prober", "probe_rate", int),
+    "INTERVAL": ("prober", "interval", int),
+    "BW_LIMIT": ("reporting", "bw_limit", str),
 }
 
-KNOWN_TOP_LEVEL = set(DEFAULTS)
+KNOWN_TOP_LEVEL = {"paths", "vp", "prober", "reporting", "options", "scans"}
 KNOWN_PROFILE_KEYS = {"name", "targets_file", "probe_rate", "max_ttl", "parallel"}
 
 
-def deep_merge(base, override):
-    merged = copy.deepcopy(base)
-    for key, value in (override or {}).items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = deep_merge(merged[key], value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
-
-
 def collect_unknown_keys(config):
+    # Log warnings for keys we don't recognize
     warnings = []
     unknown = sorted(set(config) - KNOWN_TOP_LEVEL)
     if unknown:
         warnings.append(f"ignoring unknown top-level config key(s): {unknown}")
-    for section in ("paths", "vp", "prober", "reporting", "options"):
-        unknown = sorted(set(config.get(section) or {}) - set(DEFAULTS[section]))
+    known = {
+        "paths": set(REQUIRED_PATHS),
+        "vp": {"hostname"},
+        "prober": set(REQUIRED_PROBER),
+        "reporting": set(REQUIRED_REPORTING),
+        "options": set(OPTIONAL_OPTIONS),
+    }
+    for section, keys in known.items():
+        unknown = sorted(set(config.get(section) or {}) - keys)
         if unknown:
             warnings.append(f"ignoring unknown key(s) in {section}: {unknown}")
     for profile in config.get("scans") or []:
-        if not isinstance(profile, dict):
-            continue
-        unknown = sorted(set(profile) - KNOWN_PROFILE_KEYS)
-        if unknown:
-            warnings.append(f"[{profile.get('name', '?')}] ignoring unknown key(s): {unknown}")
+        if isinstance(profile, dict):
+            unknown = sorted(set(profile) - KNOWN_PROFILE_KEYS)
+            if unknown:
+                warnings.append(f"[{profile.get('name', '?')}] ignoring unknown key(s): {unknown}")
     return warnings
 
 
 def apply_env_overrides(config):
-    """Applies the environment variables deployed vantage points already set."""
-    probe_rate = os.environ.get("PROBE_RATE")
-    if probe_rate:
+    for name, (section, field, cast) in ENV_OVERRIDES.items():
+        raw = os.environ.get(name)
+        if not raw:
+            continue
         try:
-            config["prober"]["probe_rate"] = int(probe_rate)
+            value = cast(raw)
         except ValueError:
-            raise ConfigError(f"PROBE_RATE must be an integer, got {probe_rate!r}")
-
-    interval = os.environ.get("INTERVAL")
-    if interval:
-        try:
-            config["prober"]["interval"] = int(interval)
-        except ValueError:
-            raise ConfigError(f"INTERVAL must be an integer, got {interval!r}")
-
-    bw_limit = os.environ.get("BW_LIMIT")
-    if bw_limit:
-        config["reporting"]["bw_limit"] = bw_limit
-
+            raise ConfigError(f"{name} must be an integer, got {raw!r}")
+        config.setdefault(section, {})[field] = value
     return config
 
 
+def require_section(config, name, keys):
+    section = config.get(name)
+    if not isinstance(section, dict):
+        raise ConfigError(f"config is missing the {name!r} section")
+    missing = sorted(k for k in keys if section.get(k) is None)
+    if missing:
+        raise ConfigError(f"{name} is missing required key(s): {missing}")
+    return section
+
+
 def resolve_hostname(config):
-    configured = config["vp"].get("hostname")
-    raw = configured or socket.gethostname()
+    vp = config.setdefault("vp", {}) or {}
+    config["vp"] = vp
+    raw = vp.get("hostname") or socket.gethostname()
     hostname = naming.sanitize_hostname(raw)
     if not hostname:
         raise ConfigError(
             f"could not derive a usable vantage point name from {raw!r} - "
             f"set vp.hostname in the config"
         )
-    config["vp"]["hostname"] = hostname
+    vp["hostname"] = hostname
     return hostname
 
 
 def validate(config):
-    """Raises ConfigError on anything that would make a run meaningless.
+    # Raises ConfigError on anything that would make a run meaningless
+    paths = require_section(config, "paths", REQUIRED_PATHS)
+    for key in REQUIRED_PATHS:
+        if not isinstance(paths[key], str):
+            raise ConfigError(f"paths.{key} must be a string, got {paths[key]!r}")
 
-    Everything here is checked before the first scan starts, so a bad config
-    fails at startup rather than half an hour in.
-    """
-    prober = config["prober"]
-    for key in ("probe_rate", "interval", "max_ttl"):
-        value = prober.get(key)
-        if not isinstance(value, int) or value <= 0:
-            raise ConfigError(f"prober.{key} must be a positive integer, got {value!r}")
+    prober = require_section(config, "prober", REQUIRED_PROBER)
+    for key in REQUIRED_PROBER:
+        if not isinstance(prober[key], int) or prober[key] <= 0:
+            raise ConfigError(f"prober.{key} must be a positive integer, got {prober[key]!r}")
     if prober["max_ttl"] > 255:
         raise ConfigError(f"prober.max_ttl must be at most 255, got {prober['max_ttl']}")
 
-    options = config["options"]
+    require_section(config, "reporting", REQUIRED_REPORTING)
+
+    options = config.setdefault("options", {}) or {}
+    config["options"] = options
+    for key, fallback in OPTIONAL_OPTIONS.items():
+        options.setdefault(key, fallback)
     if not isinstance(options["max_attempts"], int) or options["max_attempts"] < 1:
         raise ConfigError(
             f"options.max_attempts must be at least 1 (1 means no retry), "
@@ -179,11 +149,11 @@ def validate(config):
         if not profile.get("targets_file"):
             raise ConfigError(f"[{name}] targets_file is required")
 
-        rate = profile.get("probe_rate", prober["probe_rate"])
+        rate = profile_probe_rate(profile, config)
         if not isinstance(rate, int) or rate <= 0:
             raise ConfigError(f"[{name}] probe_rate must be a positive integer, got {rate!r}")
 
-        max_ttl = profile.get("max_ttl", prober["max_ttl"])
+        max_ttl = profile_max_ttl(profile, config)
         if not isinstance(max_ttl, int) or not (0 < max_ttl <= 255):
             raise ConfigError(f"[{name}] max_ttl must be between 1 and 255, got {max_ttl!r}")
 
@@ -191,25 +161,24 @@ def validate(config):
 
 
 def load(path=None):
-    """Loads, merges, validates. Returns (config, warnings)."""
     path = path or os.environ.get("CONFIG_FILE") or DEFAULT_CONFIG_PATH
 
-    user_config = {}
-    warnings = []
     try:
         with open(path, "r") as f:
-            user_config = yaml.safe_load(f) or {}
+            config = yaml.safe_load(f)
     except FileNotFoundError:
-        warnings.append(f"no config file at {path} - using built-in defaults")
+        raise ConfigError(
+            f"no config file at {path}. The application ships one at "
+            f"{DEFAULT_CONFIG_PATH}; mount your own over it or point "
+            f"$CONFIG_FILE at it."
+        )
     except yaml.YAMLError as e:
         raise ConfigError(f"could not parse {path}: {e}")
 
-    if not isinstance(user_config, dict):
+    if not isinstance(config, dict):
         raise ConfigError(f"{path} must contain a YAML mapping at the top level")
 
-    warnings.extend(collect_unknown_keys(user_config))
-
-    config = deep_merge(DEFAULTS, user_config)
+    warnings = collect_unknown_keys(config)
     apply_env_overrides(config)
     resolve_hostname(config)
     validate(config)

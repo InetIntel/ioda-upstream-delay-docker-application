@@ -88,25 +88,40 @@ still run.
 
 ## Configuration
 
-The application runs on built-in defaults with no config file at all, which is
-what a vantage point configured only through docker-compose environment
-variables is doing. To change more, mount a YAML file at `/config/config.yaml`
-(or point `$CONFIG_FILE` at one); it is merged over the defaults key by key.
-See [config/config.example.yaml](config/config.example.yaml) for every setting.
+[`config/config.yaml`](config/config.yaml) is the single source of truth: what
+it says is what runs. There are no defaults layered underneath it and no
+environment variables on top, so the file you are reading is the
+configuration.
 
-These environment variables override the config file, and are the usual way to
-configure a vantage point:
+It ships with the application, so a vantage point runs on it out of the box.
+To change a setting, edit that file, mount your own over
+`/ioda-upstream-delay-application/config/config.yaml`, or point `$CONFIG_FILE`
+at a different one. Substitution happens at the filesystem level, not by
+merging.
 
-| Variable | Meaning |
+[`config/config.example.yaml`](config/config.example.yaml) documents every
+option with its meaning and defaults, including ones the shipped config
+doesn't use - per-profile `probe_rate` and `max_ttl` overrides, mixed-protocol
+target files, parallel bucketing. It is reference only and is never read.
+
+Every key is required except `vp.hostname` (null derives it from the machine)
+and the three under `options`, whose defaults are documented in both files.
+
+Three settings can be overridden per vantage point, set in its
+`docker-compose.yaml`. These win over the file, and are how a host is tuned
+without editing it:
+
+| Variable | Overrides |
 |---|---|
-| `PROBE_RATE` | Packets per second passed to yarrp |
-| `INTERVAL` | Seconds between measurement cycles, aligned to the clock |
-| `BW_LIMIT` | Upload bandwidth cap, passed to `rsync --bwlimit` |
+| `PROBE_RATE` | `prober.probe_rate` |
+| `INTERVAL` | `prober.interval` |
+| `BW_LIMIT` | `reporting.bw_limit` |
 
-Anything invalid - a bad probe rate, a duplicate or unusable profile name, a
-`max_ttl` out of range - is reported at startup, before the first scan.
-Unrecognised keys are logged as warnings rather than ignored silently, so a
-misindented setting doesn't leave a run quietly doing the wrong thing.
+Anything invalid - a missing section, a bad probe rate, a duplicate or
+unusable profile name, a `max_ttl` out of range - is reported at startup,
+before the first scan. Unrecognised keys are logged as warnings rather than
+ignored silently, so a misindented setting doesn't leave a run quietly doing
+the wrong thing.
 
 ## Output
 
