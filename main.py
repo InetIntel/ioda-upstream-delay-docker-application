@@ -10,8 +10,8 @@ import sys
 from logging.handlers import RotatingFileHandler
 import os
 
-from iupd import config as config_mod
-from iupd import proc, scheduler
+from scanner import config as config_mod
+from scanner import proc, scheduler
 
 
 def setup_logging(log_path):
