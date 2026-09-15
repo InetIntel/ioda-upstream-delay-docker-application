@@ -1,0 +1,87 @@
+paths:
+  # Where target lists live. A profile's targets_file is resolved relative to
+  # this, unless the profile gives an absolute path.
+  targets_dir:   /ioda-upstream-delay-application/source_data
+
+  staging_dir:   /data/staging        # tmp file to hold before upload
+  outbox_dir:    /data/outbox         # completed scans awaiting upload
+  scan_log_dir:  /data/scan-logs      # one log per scan attempt
+  manifest_path: /data/manifest.jsonl # one JSON object per scan
+  log_path:      /data/ioda-ud.log    # application log. Rotates at 30MB
+  yarrp_bin:     /yarrp/yarrp
+
+
+vp:
+  # Null uses the machine's own hostname
+  hostname: null
+
+
+prober:
+  # Overridden by $PROBE_RATE
+  probe_rate: 30000
+
+  # Overridden by $INTERVAL
+  interval: 1800
+  max_ttl: 32
+
+
+reporting:
+  destination:       ioda-ud@traversa.cc.gatech.edu:/traversa-pool/upstream-delay/incoming
+  port:              3412
+  bw_limit:          100m   # passed to rsync --bwlimit. Overridden by $BW_LIMIT.
+  ssh_identity_file: /data/ssh_id
+
+  # For local testing you can point destination at a directory instead of an
+  # ssh target
+
+
+# OPTIONAL
+options:
+  # Attempts per bucket, only retries if time remaining is enough to fit a scan in
+  max_attempts: 2
+
+  # Seconds of slack added to that estimate before deciding a retry fits.
+  retry_margin: 60
+
+  # Floor for buckets with small amount of targets (when pps is split up between buckets of ports / protocols)
+  min_probe_rate: 50
+
+
+# Each profile is run sequentially per cycle
+#
+# TARGET FILE FORMAT
+#   targets_file may be a single file, or a directory - in which case every
+#   top-level file in it is read and merged (subdirectories are not scanned).
+#   Lists are re-read at the start of each cycle, so editing one takes effect
+#   next cycle without a restart. Each line is either:
+#
+#     1.2.3.4                bare address - defaults to an ICMP probe
+#     1.2.3.4,ICMP           ICMP and ICMP_REPLY take no port
+#     1.2.3.4,UDP,53         TCP_ACK, TCP_SYN and UDP require one
+#     1.2.3.4,TCP_SYN,443
+#
+scans:
+  - name: default
+    targets_file: targets
+    parallel: true
+
+  # Setting targets_file to a directory uses all target lists in the directory
+  # Parellel runs all of these scans at the same time using separate instance IDs
+  # Make sure the unique combinations of protocols / ports doesn't exceed 256
+  # Individual profile runs are still sequential
+  - name: multiproto
+    targets_file: protocol_testing/
+    parallel: true
+
+  # parallel: false (the default) runs a profile's buckets one after another,
+  # each at the full probe_rate rather than a share of it.
+  #
+  - name: sequential
+    targets_file: mixed.txt
+    parallel: false
+
+  # Indiviual Profiles can override probe_rate and max_ttl
+  - name: shallow
+    targets_file: targets
+    probe_rate: 10000
+    max_ttl: 16
